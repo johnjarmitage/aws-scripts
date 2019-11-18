@@ -1,0 +1,8 @@
+name: aws
+channels:
+  - conda-forge
+dependencies:
+  - pip
+  - pip:
+      - awscli
+      - boto3
