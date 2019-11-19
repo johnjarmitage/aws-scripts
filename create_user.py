@@ -8,6 +8,8 @@ import boto3
 import json
 
 username = 'simplon_other'
+identity = '435606335423'
+policyname = 'myEC2simplonPolicy'
 
 # create the user simplon
 client = boto3.client('iam')
@@ -42,15 +44,13 @@ my_managed_policy = {
     ]
 }
 response = client.create_policy(
-  PolicyName='myEC2simplonPolicy',
+  PolicyName=policyname,
   PolicyDocument=json.dumps(my_managed_policy)
 )
 print(json.dumps(response, indent=4, sort_keys=True, default=str))
 
 # attach policy
-identity = '435606335423'
-
-PolicyArn = ("arn:aws:iam::" + identity + ":policy/myEC2simplonPolicy")
+PolicyArn = ("arn:aws:iam::{}:policy/{}", format(identity, policyname))
 print(PolicyArn)
 policy = iam.Policy(PolicyArn)
 response = policy.attach_user(UserName=username)
