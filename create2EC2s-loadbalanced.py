@@ -2,20 +2,30 @@
 python 3.7
 script to create two EC2s, 2 subnets, 1 gateway, add html, and load balance
 John Armitage
+
+TODO:
+    tag machines
+    more print statements
+    create functions for repetitive tasks
+    have a table of public and private ips
+    put the userdata in a separate file to be read in
+    get machine id from amazon for instance launch
+
 """
 
 import re
 import json
 import boto3
 
+ec2_client = boto3.client('ec2')
+ec2_resource = boto3.resource('ec2')
+elb_client = boto3.client('elbv2')
+
 
 def create2EC2(myip):
 
-    client = boto3.client('ec2')
-    ec2 = boto3.resource('ec2')
-
     # create vpc network
-    vpc = ec2.create_vpc(CidrBlock='172.168.0.0/16')
+    vpc = ec2_resource.create_vpc(CidrBlock='172.168.0.0/16')
     print(json.dumps(vpc, indent=4, sort_keys=True, default=str))
     vpc.create_tags(Tags=[{"Key": "Name", "Value": "vpc_simplon"}])
     vpc.wait_until_available()
@@ -43,7 +53,7 @@ def create2EC2(myip):
         j += 1
 
     # create an internet gateway and attach it to VPC
-    internetgateway = ec2.create_internet_gateway()
+    internetgateway = ec2_resource.create_internet_gateway()
     vpc.attach_internet_gateway(InternetGatewayId=internetgateway.id)
 
     # create a route table and a public route
@@ -54,7 +64,7 @@ def create2EC2(myip):
         routetable.associate_with_subnet(SubnetId=subnetb[j].id)
 
     # create security group, SSH (22) and HTTP (80)
-    securitygroup = ec2.create_security_group(
+    securitygroup = ec2_resource.create_security_group(
         GroupName='SSH-HTTP',
         Description='allow SSH traffic and HTTP',
         VpcId=vpc.id)
@@ -71,10 +81,10 @@ def create2EC2(myip):
 
     # create ssh key pairs
     # create a file to store the key locally
-    outfile = open('ec2-keypair.pem', 'w')
+    outfile = open('ec2-keypair.pem', 'w')  # TODO chmod 400
 
     # call the boto ec2 function to create a key pair
-    key_pair = ec2.create_key_pair(KeyName='ec2-keypair')
+    key_pair = ec2_resource.create_key_pair(KeyName='ec2-keypair')
 
     # capture the key and store it in a file
     KeyPairOut = str(key_pair.key_material)
@@ -102,7 +112,7 @@ curl http://169.254.169.254/latest/meta-data/instance-id > /var/www/html/index.h
 
     # create first EC2 instance
     # Create a linux instance in subnet A
-    instanceA = ec2.create_instances(
+    instanceA = ec2_resource.create_instances(
         ImageId='ami-040ba9174949f6de4',
         InstanceType='t2.micro',
         MaxCount=1,
@@ -121,7 +131,7 @@ curl http://169.254.169.254/latest/meta-data/instance-id > /var/www/html/index.h
     print(ec2aid)  # is there a better way of getting the instance id?
 
     # Create a linux instance in subnet B
-    instanceB = ec2.create_instances(
+    instanceB = ec2_resource.create_instances(
         ImageId='ami-040ba9174949f6de4',
         InstanceType='t2.micro',
         MaxCount=1,
@@ -141,38 +151,93 @@ curl http://169.254.169.254/latest/meta-data/instance-id > /var/www/html/index.h
 
     # create load balancer
     elbname = 'newbalancer'
-    elb = boto3.client('elb')
-    response = elb.create_load_balancer(
-        Listeners=[
-            {
-                'InstancePort': 80,
-                'InstanceProtocol': 'HTTP',
-                'LoadBalancerPort': 80,
-                'Protocol': 'HTTP',
-            },
-        ],
-        LoadBalancerName=elbname,
+
+    create_lb_response = elb_client.create_load_balancer(
+        Name=elbname,
         SecurityGroups=[securitygroup.group_id],
         Subnets=[
             subneta[0].id,
             subnetb[0].id,
         ],
+        Scheme='internet-facing'
     )
-    print(json.dumps(response, indent=4, sort_keys=True, default=str))
+    # check create load balancer returned successfully
+    print(create_lb_response)
+    if create_lb_response['ResponseMetadata']['HTTPStatusCode'] == 200:
+        lbid = create_lb_response['LoadBalancers'][0]['LoadBalancerArn']
+        print("Successfully created load balancer %s" % lbid)
+    else:
+        print("Create load balancer failed")
+        exit()
 
-    # register instance with ELB
-    response = elb.register_instances_with_load_balancer(
-        LoadBalancerName=elbname,
-        Instances=[
+    # create target-group
+    create_tg_response = elb_client.create_target_group(
+        Name='tg-%s' % elbname,
+        Protocol='HTTP',
+        Port=80,
+        VpcId=vpc.id
+    )
+
+    # check create target-group returned successfully
+    if create_tg_response['ResponseMetadata']['HTTPStatusCode'] == 200:
+        tgid = create_tg_response['TargetGroups'][0]['TargetGroupArn']
+        print("Successfully created target group %s" % tgid)
+    else:
+        print("Create target group failed")
+        exit()
+
+    # Take a pause to wait until instance is running
+    print("waiting...")
+    response = ec2_client.describe_instances()
+    for reservation in response["Reservations"]:
+        for instance in reservation["Instances"]:
+            ec2 = boto3.resource('ec2')
+            specificinstance = ec2.Instance(instance["InstanceId"])
+            print(specificinstance, specificinstance.state)
+            if specificinstance.state['Name'] != 'terminated':
+                specificinstance.wait_until_running()
+    print("waiting over")
+
+    # Register targets
+    reg_targets_response = elb_client.register_targets(
+        TargetGroupArn=tgid,
+        Targets=[
             {
-                'InstanceId': ec2aid
+                'Id': ec2aid,
+                'Port': 80,
             },
             {
-                'InstanceId': ec2bid
-            },
+                'Id': ec2bid,
+                'Port': 80,
+            }
         ]
     )
-    print(json.dumps(response, indent=4, sort_keys=True, default=str))
+
+    # check register group returned successfully
+    if reg_targets_response['ResponseMetadata']['HTTPStatusCode'] == 200:
+        print("Successfully registered targets")
+    else:
+        print("Register targets failed")
+        exit()
+
+    # create Listener
+    create_listener_response = elb_client.create_listener(
+        LoadBalancerArn=lbid,
+        Protocol='HTTP',
+        Port=80,
+        DefaultActions=[
+            {'Type': 'forward',
+             'TargetGroupArn': tgid
+             }
+        ]
+    )
+
+    # check create listener returned successfully
+    if create_listener_response['ResponseMetadata']['HTTPStatusCode'] == 200:
+        print("Successfully created listener %s" % tgid)
+    else:
+        print("Create listener failed")
+        exit()
 
 
 if __name__ == '__main__':
