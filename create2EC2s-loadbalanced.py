@@ -16,6 +16,7 @@ TODO:
 import re
 import json
 import boto3
+from create_vpc import createvpc
 
 ec2_client = boto3.client('ec2')
 ec2_resource = boto3.resource('ec2')
@@ -25,10 +26,11 @@ elb_client = boto3.client('elbv2')
 def create2EC2(myip):
 
     # create vpc network
-    vpc = ec2_resource.create_vpc(CidrBlock='172.168.0.0/16')
+    """vpc = ec2_resource.create_vpc(CidrBlock='172.168.0.0/16')
     print(json.dumps(vpc, indent=4, sort_keys=True, default=str))
     vpc.create_tags(Tags=[{"Key": "Name", "Value": "vpc_simplon"}])
-    vpc.wait_until_available()
+    vpc.wait_until_available()"""
+    createvpc('vpc_simplon', '172.168.0.0/16')
 
     # create subnets in eu-west-1a
     subneta = [None] * 2
